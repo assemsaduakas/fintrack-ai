@@ -1,10 +1,12 @@
 import os
+from dotenv import load_dotenv
 import streamlit as st
 from datetime import datetime
 
 from database import DatabaseManager
 from main import create_agents, DelegationTask, create_bookkeeper_tools, create_rag_tools, create_market_tools
 from crewai.tools.agent_tools import AgentTools
+from rag import FinancialRAG
 
 
 st.set_page_config(page_title="FinTrack AI", layout="wide")
@@ -19,10 +21,18 @@ def get_env():
 
 @st.cache_resource
 def init_system():
+    # Load environment and ensure OPENAI_API_KEY is set to avoid validation errors
+    load_dotenv()
+    if not os.getenv("OPENAI_API_KEY"):
+        st.warning("OPENAI_API_KEY not found. Set it in your environment or in a .env file for live API calls. Using a demo placeholder key to allow the UI to load.")
+        os.environ.setdefault("OPENAI_API_KEY", "demo_key")
+
     db = DatabaseManager()
+    rag = FinancialRAG()
+
     agents = create_agents([])
     crew_tools = AgentTools(agents=agents).tools()
-    shared_tools = create_bookkeeper_tools(db) + create_rag_tools(None) + create_market_tools() + crew_tools
+    shared_tools = create_bookkeeper_tools(db) + create_rag_tools(rag) + create_market_tools(rag) + crew_tools
     for agent in agents:
         agent.tools = shared_tools
     return db, agents

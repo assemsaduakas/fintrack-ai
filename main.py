@@ -76,28 +76,64 @@ def create_rag_tools(rag: FinancialRAG):
     ]
 
 
-def create_market_tools():
+def create_market_tools(rag: FinancialRAG = None):
     def market_search(query: str, region: str = "global") -> str:
         api_key = os.getenv("SERPER_API_KEY")
         if not api_key:
             return "Market search is not configured. Set SERPER_API_KEY in your .env file."
 
-        url = "https://api.serper.dev/search"
+        base_url = os.getenv("MARKET_API_URL", "https://api.serper.dev")
+        url = base_url.rstrip("/") + "/search"
         headers = {
             "X-API-KEY": api_key,
             "Content-Type": "application/json",
         }
         payload = {"q": query, "gl": region}
-        response = requests.post(url, json=payload, headers=headers, timeout=15)
-        if response.status_code != 200:
+
+        # Retries with exponential backoff for transient errors
+        for attempt in range(3):
+            try:
+                response = requests.post(url, json=payload, headers=headers, timeout=10)
+            except requests.RequestException as e:
+                logging.warning("Market search network error (attempt %d): %s", attempt + 1, e)
+                time.sleep(2 ** attempt)
+                continue
+
+            if response.status_code == 200:
+                try:
+                    data = response.json()
+                except Exception:
+                    return "Market search returned invalid JSON."
+                snippets = []
+                for item in data.get("organic", [])[:5]:
+                    title = item.get("title", "")
+                    snippet = item.get("snippet", "")
+                    snippets.append(f"- {title}: {snippet}")
+                return "\n".join(snippets) if snippets else "No market results returned."
+
+            # If 404, likely wrong endpoint — log and fallback to RAG if available
+            if response.status_code == 404:
+                logging.error("Market search 404 — endpoint may be incorrect: %s", url)
+                if rag is not None:
+                    logging.info("Falling back to local RAG for market info.")
+                    return rag.query(query)
+                return f"Market search failed: {response.status_code} {response.text}"
+
+            # Retry on 5xx
+            if 500 <= response.status_code < 600:
+                logging.warning("Market search server error %s, retrying...", response.status_code)
+                time.sleep(2 ** attempt)
+                continue
+
+            # Other client errors — do not retry
+            logging.error("Market search failed %s: %s", response.status_code, response.text)
             return f"Market search failed: {response.status_code} {response.text}"
-        data = response.json()
-        snippets = []
-        for item in data.get("organic", [])[:5]:
-            title = item.get("title", "")
-            snippet = item.get("snippet", "")
-            snippets.append(f"- {title}: {snippet}")
-        return "\n".join(snippets) if snippets else "No market results returned."
+
+        logging.error("Market search failed after retries.")
+        if rag is not None:
+            logging.info("Using RAG fallback after market search retries exhausted.")
+            return rag.query(query)
+        return "Market search failed after retries."
 
     return [
         StructuredTool.from_function(
@@ -108,7 +144,11 @@ def create_market_tools():
     ]
 
 
-def create_agents(tools):
+def create_agents(tools, openai_api_key: str = None):
+    # Create a ChatOpenAI instance with explicit API key to avoid pydantic default_factory validation
+    api_key = openai_api_key or os.getenv("OPENAI_API_KEY")
+    llm = ChatOpenAI(openai_api_key=api_key) if api_key else ChatOpenAI(openai_api_key="")
+
     return [
         Agent(
             role="Bookkeeper",
@@ -118,6 +158,7 @@ def create_agents(tools):
             memory=True,
             verbose=False,
             max_iter=6,
+            llm=llm,
         ),
         Agent(
             role="Market Analyst",
@@ -127,6 +168,7 @@ def create_agents(tools):
             memory=True,
             verbose=False,
             max_iter=6,
+            llm=llm,
         ),
         Agent(
             role="Financial Advisor",
@@ -136,6 +178,7 @@ def create_agents(tools):
             memory=True,
             verbose=False,
             max_iter=6,
+            llm=llm,
         ),
     ]
 
@@ -292,7 +335,7 @@ def main():
     shared_tools = (
         create_bookkeeper_tools(database)
         + create_rag_tools(rag)
-        + create_market_tools()
+        + create_market_tools(rag)
         + crew_tools
     )
 
