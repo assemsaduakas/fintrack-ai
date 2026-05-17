@@ -1,0 +1,32 @@
+# Virtual environments
+venv/
+venv*/
+venv312/
+.venv/
+
+# Python cache and build
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+build/
+dist/
+*.egg-info/
+
+# Test and IDE
+.pytest_cache/
+.coverage
+.idea/
+.vscode/
+
+# OS files
+.DS_Store
+
+# Logs and local DBs
+*.log
+fintrack_ai.log
+db/
+
+# Environment files
+.env
+.env.*
